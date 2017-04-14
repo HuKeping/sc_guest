@@ -52,6 +52,33 @@ int vmm_free_pages(struct page *page, int numpages)
 }
 EXPORT_SYMBOL_GPL(vmm_free_pages);
 
+bool vmm_is_in_sc(void)
+{
+	return current->ept_viewid != 0;
+}
+EXPORT_SYMBOL_GPL(vmm_is_in_sc);
+
+int vmm_create_ept_view(unsigned long clusterid)
+{
+	struct view_cfg cfg;
+	struct page *page;
+	struct pt_regs *regs = current_pt_regs();
+	int ret;
+
+	ret = get_user_pages_fast(regs->ip, 1, 0, &page);
+	if (ret < 0) {
+		printk(KERN_ERR "SC_GUEST: cannot setup first page for create view. ret = %d\n", ret);
+		return ret;
+	}
+
+	cfg.first_pfn = page_to_pfn(page);
+	cfg.enable_cluster = (clusterid != 0) ? 1 : 0;
+	cfg.cluster_id = clusterid;
+
+	return kvm_hypercall3(KVM_HC_SC, HC_CREATE_VIEW, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_create_ept_view);
+
 static int __init sc_init(void)
 {
 	struct sc_cfg cfg;

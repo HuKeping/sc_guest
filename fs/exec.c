@@ -57,6 +57,8 @@
 #include <linux/oom.h>
 #include <linux/compat.h>
 
+#include <asm/sc_guest.h>
+
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
@@ -1584,6 +1586,53 @@ static int do_execveat_common(int fd, struct filename *filename,
 	retval = exec_binprm(bprm);
 	if (retval < 0)
 		goto out;
+
+#ifdef CONFIG_SC_GUEST
+	/* SC: create ept view if needed, or set viewid if adding to a EPT view */
+	if (!vmm_is_in_sc()) {
+		bool ept_enable = false;
+		unsigned long ept_clusterid = 0;
+		int envc = bprm->envc;
+
+		while (envc-- > 0) {
+			const char __user *str;
+			const char *ept_str = "ept_enable=1";
+			const char *cluster_str = "ept_clusterid=";
+			int len;
+
+			str = get_user_arg_ptr(envp, envc);
+			if (IS_ERR(str))
+				goto out;
+
+			if (!strncmp(str, ept_str, strlen(ept_str))) {
+				ept_enable = true;
+				printk(KERN_INFO "SC_GUEST: ept_enable=1\n");
+			}
+
+			len = strlen(cluster_str);
+			if (!strncmp(str, cluster_str, len)) {
+				if (strlen(str) > len) {// "ept_clusterid=pid"
+					unsigned long pid = simple_strtoul(str + len, NULL, 10);
+					struct task_struct *tsk = find_task_by_pid_ns((pid_t)pid, &init_pid_ns);
+					if (tsk && !tsk->ept_viewid) {
+						ept_clusterid = tsk->ept_viewid;
+						printk(KERN_INFO "SC_GUEST: should trigger cluster into [pid %lu:viewid %u]\n",
+								pid, tsk->ept_viewid);
+					}
+				}
+
+			}
+
+		}
+
+		if (ept_enable || ept_clusterid) {
+			/* need to create ept view */
+			if (vmm_create_ept_view(ept_clusterid) < 0) {
+					printk(KERN_NOTICE "vmm_create_ept_view failed\n");
+			}
+		}
+	}
+#endif
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
