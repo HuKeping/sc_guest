@@ -35,6 +35,9 @@
 #include <linux/cleancache.h>
 #include <linux/rmap.h>
 #include "internal.h"
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
@@ -580,6 +583,9 @@ static int __add_to_page_cache_locked(struct page *page,
 	if (!huge)
 		mem_cgroup_commit_charge(page, memcg, false);
 	trace_mm_filemap_add_to_page_cache(page);
+#ifdef CONFIG_SC_GUEST
+	vmm_set_shared_page(page);
+#endif
 	return 0;
 err_insert:
 	page->mapping = NULL;

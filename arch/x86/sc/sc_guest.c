@@ -79,6 +79,12 @@ int vmm_create_ept_view(unsigned long clusterid)
 }
 EXPORT_SYMBOL_GPL(vmm_create_ept_view);
 
+int vmm_set_shared_page(struct page *page)
+{
+	return kvm_hypercall3(KVM_HC_SC, HC_SET_SHARED_PAGE, (unsigned long)page_to_phys(page), sizeof(uint64_t));
+}
+EXPORT_SYMBOL_GPL(vmm_set_shared_page);
+
 static int __init sc_init(void)
 {
 	struct sc_cfg cfg;
