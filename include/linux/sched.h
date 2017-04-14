@@ -1726,6 +1726,10 @@ struct task_struct {
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 	unsigned long	task_state_change;
 #endif
+#ifdef CONFIG_SC_GUEST
+	/* EPT view id for secure container */
+	unsigned long ept_viewid;
+#endif
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */
