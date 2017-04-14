@@ -85,6 +85,177 @@ int vmm_set_shared_page(struct page *page)
 }
 EXPORT_SYMBOL_GPL(vmm_set_shared_page);
 
+/* general virt to phys address translation function
+ * can be used on userspace or kernelspace addr
+ */
+phys_addr_t uvirt_to_phys(const volatile void *addr, int write)
+{
+	phys_addr_t phy;
+	struct page *page;
+
+	if ((uint64_t)addr < TASK_SIZE_MAX) {
+		get_user_pages_fast((unsigned long)addr, 1, write, &page);
+		phy = page_to_phys(page);
+		return phy + ((unsigned long)addr & (PAGE_SIZE - 1));
+	} else if (!is_vmalloc_or_module_addr((const void *)addr)) {
+		return __pa((uint64_t)addr);
+	} else {
+		return page_to_phys(vmalloc_to_page((const void *)addr)) + offset_in_page((unsigned long)addr);
+	}
+}
+EXPORT_SYMBOL_GPL(uvirt_to_phys);
+
+int vmm_data_move(const void *src, const void *dst, uint64_t size)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_MOV;
+	cfg.mov_src = uvirt_to_phys(src, 0);
+	cfg.mov_dst = uvirt_to_phys(dst, 1);
+	cfg.mov_size = size;
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_move);
+
+int vmm_data_xchg(int *oldval, u32 __user *uaddr, int *oparg)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_XCHG;
+	cfg.oldval = uvirt_to_phys(oldval, 1);
+	cfg.ptr1 = uvirt_to_phys(uaddr, 1);
+	cfg.ptr2 = uvirt_to_phys(oparg, 1);
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_xchg);
+
+int vmm_data_add(int *oldval, u32 __user *uaddr, int oparg)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_ADD;
+	cfg.oldval = uvirt_to_phys(oldval, 1);
+	cfg.ptr1 = uvirt_to_phys(uaddr, 1);
+	cfg.ptr2 = uvirt_to_phys(&oparg, 0);
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_add);
+
+int vmm_data_or(int *oldval, u32 __user *uaddr, int oparg)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_OR;
+	cfg.oldval = uvirt_to_phys(oldval, 1);
+	cfg.ptr1 = uvirt_to_phys(uaddr, 1);
+	cfg.ptr2 = uvirt_to_phys(&oparg, 0);
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+
+}
+EXPORT_SYMBOL_GPL(vmm_data_or);
+
+int vmm_data_and(int *oldval, u32 __user *uaddr, int oparg)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_AND;
+	cfg.oldval = uvirt_to_phys(oldval, 1);
+	cfg.ptr1 = uvirt_to_phys(uaddr, 1);
+	cfg.ptr2 = uvirt_to_phys(&oparg, 0);
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_and);
+
+int vmm_data_xor(int *oldval, u32 __user *uaddr, int oparg)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_XOR;
+	cfg.oldval = uvirt_to_phys(oldval, 1);
+	cfg.ptr1 = uvirt_to_phys(uaddr, 1);
+	cfg.ptr2 = uvirt_to_phys(&oparg, 0);
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_xor);
+
+int vmm_data_cmpxchg(void *ptr, uint64_t old, uint64_t new, int size)
+{
+	struct data_ex_cfg cfg;
+
+	cfg.op = SC_DATA_EXCHG_CMPXCHG;
+	cfg.cmpxchg_ptr1 = uvirt_to_phys(ptr, 1);
+	cfg.cmpxchg_ptr2 = uvirt_to_phys(&old, 1);
+	cfg.cmpxchg_new = new;
+	cfg.cmpxchg_size = size;
+
+	return kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+}
+EXPORT_SYMBOL_GPL(vmm_data_cmpxchg);
+
+/* copy a block of data: used in copy_to/from_user */
+unsigned long vmm_data_copy(const void *to, const void *from, unsigned long len)
+{
+	int ret = 0;
+	unsigned long src, dst, size;
+	int seg1, seg2;
+
+	src = (unsigned long) from;
+	dst = (unsigned long) to;
+
+	while (len) {
+		seg1 = PAGE_SIZE - offset_in_page(src);
+		seg2 = PAGE_SIZE - offset_in_page(dst);
+		/* get the min of len,seg1,seg2 as the data moving size */
+		size = (len > seg1) ? seg1 : len;
+		size = (size > seg2) ? seg2 : size;
+		ret = vmm_data_move(src, dst, size);
+		if (ret) {
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+			break;
+		}
+		len -= size;
+		src += size;
+		dst += size;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vmm_data_copy);
+
+unsigned long vmm_clear_user(void __user *addr, unsigned long len)
+{
+	int ret = 0;
+	struct data_ex_cfg cfg;
+	unsigned long ptr, size, left;
+
+	ptr = (unsigned long) addr;
+	while (len) {
+		left = PAGE_SIZE - (ptr & (PAGE_SIZE - 1));
+		size = (len > left) ? left : len;
+		cfg.set_ptr = uvirt_to_phys((void *)ptr, 1);
+		cfg.set_val = 0;
+		cfg.set_size = size;
+		cfg.op = SC_DATA_EXCHG_SET;
+
+		ret = kvm_hypercall3(KVM_HC_SC, HC_DATA_EXCHANGE, (unsigned long)__pa(&cfg), sizeof(cfg));
+		if (ret) {
+			printk(KERN_ERR "### kvm_hypercall3 failed (%s:%d) ---\n", __func__, __LINE__);
+			break;
+		}
+		len = len - size;
+		ptr += size;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vmm_clear_user);
+
 static int __init sc_init(void)
 {
 	struct sc_cfg cfg;

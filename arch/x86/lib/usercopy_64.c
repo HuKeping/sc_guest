@@ -7,12 +7,14 @@
  */
 #include <linux/module.h>
 #include <asm/uaccess.h>
-
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 /*
  * Zero Userspace
  */
 
-unsigned long __clear_user(void __user *addr, unsigned long size)
+unsigned long __orig_clear_user(void __user *addr, unsigned long size)
 {
 	long __d0;
 	might_fault();
@@ -44,6 +46,24 @@ unsigned long __clear_user(void __user *addr, unsigned long size)
 	clac();
 	return size;
 }
+
+unsigned long __clear_user(void __user *addr, unsigned long size)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		might_fault();
+		/* no memory constraint because it doesn't change any memory gcc knows
+		   about */
+		stac();
+
+		size = vmm_clear_user(addr, size);
+		clac();
+		return size;
+	}
+#endif
+	return __orig_clear_user(addr, size);
+}
+
 EXPORT_SYMBOL(__clear_user);
 
 unsigned long clear_user(void __user *to, unsigned long n)

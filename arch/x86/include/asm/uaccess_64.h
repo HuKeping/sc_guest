@@ -10,7 +10,9 @@
 #include <asm/alternative.h>
 #include <asm/cpufeature.h>
 #include <asm/page.h>
-
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 /*
  * Copy To/From Userspace
  */
@@ -27,7 +29,11 @@ static __always_inline __must_check unsigned long
 copy_user_generic(void *to, const void *from, unsigned len)
 {
 	unsigned ret;
-
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		return vmm_data_copy(to, from, len) ? 0 : len;
+	}
+#endif
 	/*
 	 * If CPU has ERMS feature, use copy_user_enhanced_fast_string.
 	 * Otherwise, if CPU has rep_good feature, use copy_user_generic_string.
@@ -220,6 +226,10 @@ static inline int
 __copy_from_user_nocache(void *dst, const void __user *src, unsigned size)
 {
 	might_fault();
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc())
+		return vmm_data_copy(dst, src, size);	
+#endif
 	return __copy_user_nocache(dst, src, size, 1);
 }
 
@@ -227,6 +237,10 @@ static inline int
 __copy_from_user_inatomic_nocache(void *dst, const void __user *src,
 				  unsigned size)
 {
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc())
+		return vmm_data_copy(dst, src, size);	
+#endif
 	return __copy_user_nocache(dst, src, size, 0);
 }
 

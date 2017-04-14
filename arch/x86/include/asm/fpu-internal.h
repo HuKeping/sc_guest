@@ -22,6 +22,9 @@
 #include <asm/uaccess.h>
 #include <asm/xsave.h>
 #include <asm/smap.h>
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 
 #ifdef CONFIG_X86_64
 # include <asm/sigcontext32.h>
@@ -179,12 +182,45 @@ static inline void sanitize_i387_state(struct task_struct *tsk)
 	err;								\
 })
 
-static inline int fsave_user(struct i387_fsave_struct __user *fx)
+static inline int orig_fsave_user(struct i387_fsave_struct *fx)
 {
 	return user_insn(fnsave %[fx]; fwait,  [fx] "=m" (*fx), "m" (*fx));
 }
 
-static inline int fxsave_user(struct i387_fxsave_struct __user *fx)
+static inline int fsave_user(struct i387_fsave_struct __user *fx)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		void *buf;
+		int size, off;
+		int ret;
+		struct i387_fsave_struct *kfx;
+
+		/* fxsave and store require 16 byte align */
+		size = sizeof(struct i387_fsave_struct) + 15;
+		buf = kmalloc(size, GFP_KERNEL);
+		off = ((unsigned long)buf) & 0xF;
+		kfx = (struct i387_fsave_struct *)((unsigned long)buf + ((off == 0) ? 0 : (0x10 - off)));
+
+		ret = orig_fsave_user(kfx);
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### %s -- orig_fsave_user failed -- \n",__func__);
+			return ret;
+		}
+
+		ret = vmm_data_move(kfx, fx, sizeof(struct i387_fsave_struct));
+		if (ret) {
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+		}
+		kfree(buf);
+		return ret;
+	}
+#endif
+	return orig_fsave_user(fx);
+}
+
+static inline int orig_fxsave_user(struct i387_fxsave_struct *fx)
 {
 	if (config_enabled(CONFIG_X86_32))
 		return user_insn(fxsave %[fx], [fx] "=m" (*fx), "m" (*fx));
@@ -193,6 +229,39 @@ static inline int fxsave_user(struct i387_fxsave_struct __user *fx)
 
 	/* See comment in fpu_fxsave() below. */
 	return user_insn(rex64/fxsave (%[fx]), "=m" (*fx), [fx] "R" (fx));
+}
+
+static inline int fxsave_user(struct i387_fxsave_struct __user *fx)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		void *buf;
+		int size, off;
+		int ret;
+		struct i387_fxsave_struct *kfx;
+
+		/* fxsave and store require 16 byte align */
+		size = sizeof(struct i387_fxsave_struct) + 15;
+		buf = kmalloc(size, GFP_KERNEL);
+		off = ((unsigned long)buf) & 0xF;
+		kfx = (struct i387_fxsave_struct *)((unsigned long)buf + ((off == 0) ? 0 : (0x10 - off)));
+
+		ret = orig_fxsave_user(kfx);
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### %s -- orig_fxsave_user failed -- \n",__func__);
+			return ret;
+		}
+
+		ret = vmm_data_move(kfx, fx, sizeof(struct i387_fxsave_struct));
+		if (ret) {
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+		}
+		kfree(buf);
+		return ret;
+	}
+#endif
+	return orig_fxsave_user(fx);
 }
 
 static inline int fxrstor_checking(struct i387_fxsave_struct *fx)
@@ -207,7 +276,7 @@ static inline int fxrstor_checking(struct i387_fxsave_struct *fx)
 			  "m" (*fx));
 }
 
-static inline int fxrstor_user(struct i387_fxsave_struct __user *fx)
+static inline int orig_fxrstor_user(struct i387_fxsave_struct *fx)
 {
 	if (config_enabled(CONFIG_X86_32))
 		return user_insn(fxrstor %[fx], "=m" (*fx), [fx] "m" (*fx));
@@ -219,14 +288,86 @@ static inline int fxrstor_user(struct i387_fxsave_struct __user *fx)
 			  "m" (*fx));
 }
 
+static inline int fxrstor_user(struct i387_fxsave_struct __user *fx)
+{
+#ifdef CONFIG_SC_CONFIG
+	if (vmm_is_in_sc()) {
+		void *buf;
+		int size, off;
+		int ret;
+		struct i387_fxsave_struct *kfx;
+
+		/* fxsave and store require 16 byte align */
+		size = sizeof(struct i387_fxsave_struct) + 15;
+		buf = kmalloc(size, GFP_KERNEL);
+		off = ((unsigned long)buf) & 0xF;
+		kfx = (struct i387_fxsave_struct *)((unsigned long)buf + ((off == 0) ? 0 : (0x10 - off)));
+
+		ret = vmm_data_move(fx, kfx, sizeof(struct i387_fxsave_struct));
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+			return ret;
+		}
+
+		ret = orig_fxrstor_user(kfx);
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### %s -- orig_fxrstor_user failed -- \n",__func__);
+			return ret;
+		}
+
+		kfree(buf);
+		return ret;
+	}
+#endif
+	return orig_fxrstor_user(fx);
+}
+
 static inline int frstor_checking(struct i387_fsave_struct *fx)
 {
 	return check_insn(frstor %[fx], "=m" (*fx), [fx] "m" (*fx));
 }
 
-static inline int frstor_user(struct i387_fsave_struct __user *fx)
+static inline int orig_frstor_user(struct i387_fsave_struct *fx)
 {
 	return user_insn(frstor %[fx], "=m" (*fx), [fx] "m" (*fx));
+}
+
+static inline int frstor_user(struct i387_fsave_struct __user *fx)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		void *buf;
+		int size, off;
+		int ret;
+		struct i387_fsave_struct *kfx;
+
+		/* fxsave and store require 16 byte align */
+		size = sizeof(struct i387_fsave_struct) + 15;
+		buf = kmalloc(size, GFP_KERNEL);
+		off = ((unsigned long)buf) & 0xF;
+		kfx = (struct i387_fsave_struct *)((unsigned long)buf + ((off == 0) ? 0 : (0x10 - off)));
+
+		ret = vmm_data_move(fx, kfx, sizeof(struct i387_fsave_struct));
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+			return ret;
+		}
+
+		ret = orig_frstor_user(kfx);
+		if (ret) {
+			kfree(buf);
+			printk(KERN_ERR "### %s -- orig_frstor_user failed -- \n",__func__);
+			return ret;
+		}
+
+		kfree(buf);
+		return ret;
+	}
+#endif
+	return orig_frstor_user(fx);
 }
 
 static inline void fpu_fxsave(struct fpu *fpu)

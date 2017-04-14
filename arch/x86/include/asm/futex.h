@@ -59,20 +59,45 @@ static inline int futex_atomic_op_inuser(int encoded_op, u32 __user *uaddr)
 
 	switch (op) {
 	case FUTEX_OP_SET:
-		__futex_atomic_op1("xchgl %0, %2", ret, oldval, uaddr, oparg);
+#ifdef CONFIG_SC_CONFIG
+		if (vmm_is_in_sc())
+			ret = vmm_data_xchg(&oldval, uaddr, &oparg);
+		else
+#endif
+			__futex_atomic_op1("xchgl %0, %2", ret, oldval, uaddr, oparg);
 		break;
 	case FUTEX_OP_ADD:
-		__futex_atomic_op1(LOCK_PREFIX "xaddl %0, %2", ret, oldval,
+#ifdef CONFIG_SC_CONFIG
+		if (vmm_is_in_sc())
+			ret = vmm_data_add(&oldval, uaddr, oparg);
+		else
+#endif
+			__futex_atomic_op1(LOCK_PREFIX "xaddl %0, %2", ret, oldval,
 				   uaddr, oparg);
 		break;
 	case FUTEX_OP_OR:
-		__futex_atomic_op2("orl %4, %3", ret, oldval, uaddr, oparg);
+#ifdef CONFIG_SC_GUEST
+		if (vmm_is_in_sc())
+			ret = vmm_data_or(&oldval, uaddr, oparg);
+		else
+#endif
+			__futex_atomic_op2("orl %4, %3", ret, oldval, uaddr, oparg);
 		break;
 	case FUTEX_OP_ANDN:
-		__futex_atomic_op2("andl %4, %3", ret, oldval, uaddr, ~oparg);
+#ifdef CONFIG_SC_GUEST
+		if (vmm_is_in_sc())
+			ret = vmm_data_and(&oldval, uaddr, ~oparg);
+		else
+#endif
+			__futex_atomic_op2("andl %4, %3", ret, oldval, uaddr, ~oparg);
 		break;
 	case FUTEX_OP_XOR:
-		__futex_atomic_op2("xorl %4, %3", ret, oldval, uaddr, oparg);
+#ifdef CONFIG_SC_GUEST
+		if (vmm_is_in_sc())
+			ret = vmm_data_xor(&oldval, uaddr, oparg);
+		else
+#endif
+			__futex_atomic_op2("xorl %4, %3", ret, oldval, uaddr, oparg);
 		break;
 	default:
 		ret = -ENOSYS;

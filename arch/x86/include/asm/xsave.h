@@ -3,6 +3,9 @@
 
 #include <linux/types.h>
 #include <asm/processor.h>
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 
 #define XSTATE_CPUID		0x0000000d
 
@@ -211,7 +214,7 @@ static inline int fpu_xrstor_checking(struct xsave_struct *fx)
  * backward compatibility for old applications which don't understand
  * compacted format of xsave area.
  */
-static inline int xsave_user(struct xsave_struct __user *buf)
+static inline int orig_xsave_user(struct xsave_struct __user *buf)
 {
 	int err;
 
@@ -232,10 +235,51 @@ static inline int xsave_user(struct xsave_struct __user *buf)
 	return err;
 }
 
+static inline int xsave_user(struct xsave_struct __user *buf)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		int err = 0;
+		void *tmp;
+		int size, off;
+		int ret;
+		struct xsave_struct *kbuf;
+
+		/* xsave and store require 64 byte align */
+		size = sizeof(struct xsave_struct) + 63;
+		tmp = kzalloc(size, GFP_KERNEL);
+		off = ((unsigned long)tmp) & 0xFFFF;
+		kbuf = (struct xsave_struct *)((unsigned long)tmp + ((off == 0)? 0 : (0x10000 - off)));
+
+		__asm__ __volatile__(ASM_STAC "\n"
+				     "1:"XSAVE"\n"
+				     "2: " ASM_CLAC "\n"
+				     xstate_fault
+				     : "D" (kbuf), "a" (-1), "d" (-1), "0" (0)
+				     : "memory");
+
+		if (err) {
+			kfree(tmp);
+			printk(KERN_ERR "### %s -- xstate_fault -- \n",__func__);
+			return err;
+		}
+
+		ret = vmm_data_move(kbuf, buf, sizeof(struct xsave_struct));
+		if (ret) {
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+		}
+		kfree(tmp);
+		return ret;
+	}
+#endif
+	return orig_xsave_user(buf);
+}
+
+
 /*
  * Restore xstate from user space xsave area.
  */
-static inline int xrestore_user(struct xsave_struct __user *buf, u64 mask)
+static inline int orig_xrestore_user(struct xsave_struct *buf, u64 mask)
 {
 	int err = 0;
 	struct xsave_struct *xstate = ((__force struct xsave_struct *)buf);
@@ -249,6 +293,42 @@ static inline int xrestore_user(struct xsave_struct __user *buf, u64 mask)
 			     : "D" (xstate), "a" (lmask), "d" (hmask), "0" (0)
 			     : "memory");	/* memory required? */
 	return err;
+}
+
+static inline int xrestore_user(struct xsave_struct __user *buf, u64 mask)
+{
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		void *tmp;
+		int size, off;
+		int ret;
+		struct xsave_struct *kbuf;
+
+		/* xsave and store require 64 byte align */
+		size = sizeof(struct xsave_struct) + 63;
+		tmp = kzalloc(size, GFP_KERNEL);
+		off = ((unsigned long)tmp) & 0xFFFF;
+		kbuf = (struct xsave_struct *)((unsigned long)tmp + ((off == 0) ? 0 : (0x10000 - off)));
+
+		ret = vmm_data_move(buf, kbuf, sizeof(struct xsave_struct));
+		if (ret) {
+			kfree(tmp);
+			printk(KERN_ERR "### vmm_data_move failed (%s:%d) ---\n",__func__,__LINE__);
+			return ret;
+		}
+		ret = orig_xrestore_user(kbuf, mask);
+		if (ret) {
+			kfree(tmp);
+			printk(KERN_ERR "### %s -- orig_xrestore_user failed -- \n",__func__);
+			return ret;
+		}
+
+		kfree(tmp);
+		return ret;
+
+	}
+#endif
+	return orig_xrestore_user(buf, mask);
 }
 
 void *get_xsave_addr(struct xsave_struct *xsave, int xstate);

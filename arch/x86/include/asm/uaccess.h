@@ -10,7 +10,9 @@
 #include <asm/asm.h>
 #include <asm/page.h>
 #include <asm/smap.h>
-
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 #define VERIFY_READ 0
 #define VERIFY_WRITE 1
 
@@ -170,7 +172,7 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
  * Clang/LLVM cares about the size of the register, but still wants
  * the base register for something that ends up being a pair.
  */
-#define get_user(x, ptr)						\
+#define orig_get_user(x, ptr)						\
 ({									\
 	int __ret_gu;							\
 	register __inttype(*(ptr)) __val_gu asm("%"_ASM_DX);		\
@@ -182,6 +184,20 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
 	(x) = (__force __typeof__(*(ptr))) __val_gu;			\
 	__ret_gu;							\
 })
+
+#ifdef CONFIG_SC_GUEST
+#define get_user(x, ptr) 						\
+({									\
+	int __ret_gu;							\
+	if (vmm_is_in_sc())						\
+		__ret_gu = vmm_data_move(&(x), (ptr), sizeof(*(ptr)));	\
+	else								\
+		__ret_gu = orig_get_user(x, ptr);			\
+	__ret_gu;							\
+})
+#else
+#define get_user(x, ptr) orig_get_user(x, ptr) 
+#endif
 
 #define __put_user_x(size, x, ptr, __ret_pu)			\
 	asm volatile("call __put_user_" #size : "=a" (__ret_pu)	\
@@ -251,7 +267,7 @@ extern void __put_user_8(void);
  *
  * Returns zero on success, or -EFAULT on error.
  */
-#define put_user(x, ptr)					\
+#define orig_put_user(x, ptr)					\
 ({								\
 	int __ret_pu;						\
 	__typeof__(*(ptr)) __pu_val;				\
@@ -277,6 +293,24 @@ extern void __put_user_8(void);
 	}							\
 	__ret_pu;						\
 })
+
+#ifdef CONFIG_SC_GUEST
+#define put_user(x, ptr)						\
+({									\
+	int __ret_pu;							\
+	if (vmm_is_in_sc()) {						\
+		__typeof__(*(ptr)) val = x;				\
+		__chk_user_ptr(ptr);					\
+		might_fault();						\
+		__ret_pu = vmm_data_move(ptr, &val, sizeof(*(ptr)));	\
+	} else {							\
+		__ret_pu = orig_put_user(x, ptr);			\
+	}								\
+	__ret_pu;							\
+})
+#else
+#define put_user(x, ptr) orig_put_user(x, ptr) 
+#endif
 
 #define __put_user_size(x, ptr, size, retval, errret)			\
 do {									\
@@ -354,7 +388,7 @@ do {									\
 	}								\
 } while (0)
 
-#define __get_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
+#define __orig_get_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
 	asm volatile(ASM_STAC "\n"					\
 		     "1:	mov"itype" %2,%"rtype"1\n"		\
 		     "2: " ASM_CLAC "\n"				\
@@ -366,6 +400,19 @@ do {									\
 		     _ASM_EXTABLE(1b, 3b)				\
 		     : "=r" (err), ltype(x)				\
 		     : "m" (__m(addr)), "i" (errret), "0" (err))
+
+#ifdef CONFIG_SC_CONFIG
+#define __get_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
+({									\
+	if (vmm_is_in_sc())						\
+		err = vmm_data_move((addr), &(x), sizeof(*(addr)));	\
+	else								\
+		__orig_get_user_asm(x, addr, err, itype, rtype, ltype, errret); \
+})
+#else
+#define __get_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
+	__orig_get_user_asm(x, addr, err, itype, rtype, ltype, errret)
+#endif
 
 #define __get_user_size_ex(x, ptr, size)				\
 do {									\
@@ -388,7 +435,7 @@ do {									\
 	}								\
 } while (0)
 
-#define __get_user_asm_ex(x, addr, itype, rtype, ltype)			\
+#define __orig_get_user_asm_ex(x, addr, itype, rtype, ltype)			\
 	asm volatile("1:	mov"itype" %1,%"rtype"0\n"		\
 		     "2:\n"						\
 		     ".section .fixup,\"ax\"\n"				\
@@ -397,6 +444,19 @@ do {									\
 		     ".previous\n"					\
 		     _ASM_EXTABLE_EX(1b, 3b)				\
 		     : ltype(x) : "m" (__m(addr)))
+
+#ifdef CONFIG_SC_CONFIG
+#define __get_user_asm_ex(x, addr, itype, rtype, ltype)			\
+({									\
+	if (vmm_is_in_sc())						\
+		vmm_data_move((addr), &(x), sizeof(*(addr)));	\
+	else								\
+		__orig_get_user_asm_ex(x, addr, itype, rtype, ltype);	\
+})
+#else
+#define __get_user_asm_ex(x, addr, itype, rtype, ltype)			\
+	__orig_get_user_asm_ex(x, addr, itype, rtype, ltype)
+#endif
 
 #define __put_user_nocheck(x, ptr, size)			\
 ({								\
@@ -423,7 +483,7 @@ struct __large_struct { unsigned long buf[100]; };
  * we do not write to any memory gcc knows about, so there are no
  * aliasing issues.
  */
-#define __put_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
+#define __orig_put_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
 	asm volatile(ASM_STAC "\n"					\
 		     "1:	mov"itype" %"rtype"1,%2\n"		\
 		     "2: " ASM_CLAC "\n"				\
@@ -435,11 +495,41 @@ struct __large_struct { unsigned long buf[100]; };
 		     : "=r"(err)					\
 		     : ltype(x), "m" (__m(addr)), "i" (errret), "0" (err))
 
-#define __put_user_asm_ex(x, addr, itype, rtype, ltype)			\
+#ifdef CONFIG_SC_CONFIG
+#define __put_user_asm(x, addr, err, itype, rtype, ltype, errret) 	\
+({									\
+	if (vmm_is_in_sc()) {						\
+		__typeof__(*(addr)) val = x;				\
+		err = vmm_data_move(&(val), (addr), sizeof(*(addr)));	\
+	} else {							\
+		__orig_put_user_asm(x, addr, err, itype, rtype, ltype, errret); \
+	}								\
+})
+#else
+#define __put_user_asm(x, addr, err, itype, rtype, ltype, errret) 	\
+	__orig_put_user_asm(x, addr, err, itype, rtype, ltype, errret)
+#endif
+
+#define __orig_put_user_asm_ex(x, addr, itype, rtype, ltype)			\
 	asm volatile("1:	mov"itype" %"rtype"0,%1\n"		\
 		     "2:\n"						\
 		     _ASM_EXTABLE_EX(1b, 2b)				\
 		     : : ltype(x), "m" (__m(addr)))
+
+#ifdef CONFIG_SC_CONFIG
+#define __put_user_asm_ex(x, addr, itype, rtype, ltype)			\
+({									\
+	if (vmm_is_in_sc()) {						\
+		__typeof__(*(addr)) val = x;				\
+		vmm_data_move(&(val), (addr), sizeof(*(addr)));		\
+	} else {							\
+		__orig_put_user_asm_ex(x, addr, itype, rtype, ltype);	\
+	}								\
+})
+#else
+#define __put_user_asm_ex(x, addr, itype, rtype, ltype)			\
+	__orig_put_user_asm_ex(x, addr, itype, rtype, ltype)
+#endif
 
 /*
  * uaccess_try and catch
@@ -540,7 +630,7 @@ unsigned long __must_check __clear_user(void __user *mem, unsigned long len);
 extern void __cmpxchg_wrong_size(void)
 	__compiletime_error("Bad argument size for cmpxchg");
 
-#define __user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size)	\
+#define __orig_user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size)	\
 ({									\
 	int __ret = 0;							\
 	__typeof__(ptr) __uval = (uval);				\
@@ -620,6 +710,26 @@ extern void __cmpxchg_wrong_size(void)
 	*__uval = __old;						\
 	__ret;								\
 })
+
+#ifdef CONFIG_SC_CONFIG
+#define __user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size)	\
+({									\
+	int __ret;							\
+	if (vmm_is_in_sc()) {						\
+		__typeof__(ptr) __uval = (uval);			\
+		__typeof__(*(ptr)) __old = (old);			\
+		__typeof__(*(ptr)) __new = (new);			\
+		__ret = vmm_data_cmpxchg(ptr, __old, __new, size);	\
+		*__uval = __old;					\
+	} else {							\
+		__ret = __orig_user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size);	\
+	}								\
+	__ret;								\
+})
+#else
+#define __user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size)	\
+	__orig_user_atomic_cmpxchg_inatomic(uval, ptr, old, new, size)
+#endif
 
 #define user_atomic_cmpxchg_inatomic(uval, ptr, old, new)		\
 ({									\
@@ -712,6 +822,12 @@ copy_from_user(void *to, const void __user *from, unsigned long n)
 	 * Therefore limit the compile time checking to the constant size
 	 * case, and do only runtime checking for non-constant sizes.
 	 */
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		/* if vmm_data_copy failed, return 0, else return n; */
+		return vmm_data_copy(to, from, n) ? 0 : n;
+	}
+#endif
 
 	if (likely(sz < 0 || sz >= n))
 		n = _copy_from_user(to, from, n);
@@ -730,6 +846,12 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 
 	might_fault();
 
+#ifdef CONFIG_SC_GUEST
+	if (vmm_is_in_sc()) {
+		/* if vmm_data_copy failed, return 0, else return n; */
+		return vmm_data_copy(to, from, n) ? 0 : n;
+	}
+#endif
 	/* See the comment in copy_from_user() above. */
 	if (likely(sz < 0 || sz >= n))
 		n = _copy_to_user(to, from, n);
