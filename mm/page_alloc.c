@@ -61,7 +61,9 @@
 #include <linux/hugetlb.h>
 #include <linux/sched/rt.h>
 #include <linux/page_owner.h>
-
+#ifdef CONFIG_SC_GUEST
+#include <asm/sc_guest.h>
+#endif
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -2980,6 +2982,9 @@ void __free_pages(struct page *page, unsigned int order)
 		else
 			__free_pages_ok(page, order);
 	}
+#ifdef CONFIG_SC_GUEST
+	vmm_free_pages(page, 1 << order);
+#endif
 }
 
 EXPORT_SYMBOL(__free_pages);
